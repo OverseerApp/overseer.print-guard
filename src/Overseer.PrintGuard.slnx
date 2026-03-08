@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Overseer.PrintGuard/Overseer.PrintGuard.csproj" />
+  <Project Path="Overseer.PrintGuard.Tests/Overseer.PrintGuard.Tests.csproj" />
+</Solution>

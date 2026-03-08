@@ -1,12 +1,16 @@
 using System.Reflection;
 using System.Text.Json;
+using log4net;
 
 namespace Overseer.PrintGuard;
 
 public static class PrintGuardPrototypes
 {
+  private static readonly ILog _log = LogManager.GetLogger(typeof(PrintGuardPrototypes));
+
   private static readonly Lazy<Dictionary<string, float[]>> _prototypes = new(() =>
   {
+    _log.Info("Loading print guard prototypes from embedded resources.");
     var prototypesJson = LoadEmbeddedResource("Overseer.PrintGuard.Resources.print_guard_prototypes.json");
     var prototypesDict = JsonSerializer.Deserialize<Dictionary<string, float[]>>(prototypesJson);
     return prototypesDict ?? [];
@@ -22,6 +26,7 @@ public static class PrintGuardPrototypes
     if (stream == null)
     {
       var availableResources = assembly.GetManifestResourceNames();
+      _log.Error($"Embedded resource '{resourceName}' not found. Available resources: {string.Join(", ", availableResources)}");
       throw new InvalidOperationException(
         $"Embedded resource '{resourceName}' not found. Available resources: {string.Join(", ", availableResources)}"
       );
