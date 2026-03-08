@@ -7,7 +7,7 @@
       "type": "shell",
       "args": [
         "build",
-        "${workspaceFolder}/src/Overseer.PrintGuard.sln",
+        "${workspaceFolder}/src/Overseer.PrintGuard.slnx",
         "/property:GenerateFullPaths=true",
         "/consoleloggerparameters:NoSummary"
       ],

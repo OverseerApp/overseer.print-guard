@@ -1,20 +1,41 @@
+using log4net;
 using Overseer.Server.Integration.Automation;
 
 namespace Overseer.PrintGuard;
 
 public class PrintGuardFailureDetectionAnalyzer(PrintGuardModel model, IPrintGuardCameraStreamer cameraStreamer) : IFailureDetectionAnalyzer
 {
+  private static readonly ILog _log = LogManager.GetLogger(typeof(PrintGuardFailureDetectionAnalyzer));
   private readonly int _windowSize = 20;
   private readonly double _threshold = 0.7;
   private readonly Queue<FailureDetectionAnalysisResult> _history = new();
+  private readonly SemaphoreSlim _semaphore = new(1, 1);
 
   public FailureDetectionAnalysisResult Analyze()
   {
-    var frame = cameraStreamer.GetProcessedFrame();
-    if (frame == null || frame.Length == 0)
-      throw new InvalidOperationException("No frame data available from camera streamer.");
+    _semaphore.Wait();
+    try
+    {
+      _log.Debug("Analyzing current frame...");
+      var frame = cameraStreamer.GetProcessedFrame();
+      if (frame == null || frame.Length == 0)
+      {
+        _log.Warn("No frame data available from camera streamer yet. Waiting for stream.");
+        return new FailureDetectionAnalysisResult
+        {
+          IsFailureDetected = false,
+          ConfidenceScore = 0.0,
+          FailureReason = "Waiting",
+          Details = "Waiting for initial frame data from the camera stream.",
+        };
+      }
 
-    return AnalyzeFrame(frame);
+      return AnalyzeFrame(frame);
+    }
+    finally
+    {
+      _semaphore.Release();
+    }
   }
 
   /// <summary>
@@ -77,7 +98,7 @@ public class PrintGuardFailureDetectionAnalyzer(PrintGuardModel model, IPrintGua
       return new FailureDetectionAnalysisResult
       {
         IsFailureDetected = false,
-        ConfidenceScore = 1.0,
+        ConfidenceScore = 0.0,
         FailureReason = "Insufficient Data",
         Details = "Not enough data collected to determine failure.",
       };
@@ -86,6 +107,7 @@ public class PrintGuardFailureDetectionAnalyzer(PrintGuardModel model, IPrintGua
     int failureCount = _history.Count(x => x.IsFailureDetected);
     if ((double)failureCount / _history.Count >= _threshold)
     {
+      _log.Warn($"Failure threshold reached ({failureCount}/{_history.Count}). Reporting failure.");
       var topFailure = _history
         .Where(x => x.IsFailureDetected)
         .GroupBy(x => x.FailureReason)
@@ -116,11 +138,13 @@ public class PrintGuardFailureDetectionAnalyzer(PrintGuardModel model, IPrintGua
 
   public void Start(string url)
   {
+    _log.Info("Starting failure detection analyzer.");
     cameraStreamer.Start(url);
   }
 
   public void Stop()
   {
+    _log.Info("Stopping failure detection analyzer.");
     cameraStreamer.Stop();
   }
 }

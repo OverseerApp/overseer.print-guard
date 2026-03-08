@@ -1,14 +1,12 @@
 using Emgu.CV;
 using Emgu.CV.CvEnum;
-using Emgu.CV.Util;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using log4net;
 
 namespace Overseer.PrintGuard;
 
 public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
 {
+  private static readonly ILog _log = LogManager.GetLogger(typeof(PrintGuardCameraStreamer));
   private VideoCapture? _capture;
   private Mat _latestFrame = new();
   private readonly Lock _frameLock = new();
@@ -16,6 +14,14 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
 
   public void Start(string url)
   {
+    var safeUrl = url;
+    if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.UserInfo))
+    {
+      var builder = new UriBuilder(uri) { UserName = "***", Password = "***" };
+      safeUrl = builder.Uri.ToString();
+    }
+
+    _log.Info($"Starting camera streamer for URL: {safeUrl}");
     _capture = new VideoCapture(url);
     _capture.Set(CapProp.FourCC, VideoWriter.Fourcc('M', 'J', 'P', 'G'));
     _capture.ImageGrabbed += (s, e) =>
@@ -34,6 +40,7 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
   {
     if (_capture != null)
     {
+      _log.Info("Stopping camera streamer.");
       _capture.Stop();
       _capture.Dispose();
       _capture = null;
@@ -76,7 +83,7 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
   {
     if (frame.IsEmpty)
     {
-      Console.Error.WriteLine("Warning: PreprocessImage received an empty frame. Returning an empty feature array.");
+      _log.Warn("PreprocessImage received an empty frame. Returning an empty feature array.");
       return [];
     }
 
@@ -86,47 +93,50 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
     int targetSize = 256; // Resize to 256 first
     int cropSize = 224; // Then center crop to 224
 
-    // 2. Convert Mat to ImageSharp Image, convert to Grayscale, and Resize
-    using var buffer = new VectorOfByte();
-    CvInvoke.Imencode(".png", frame, buffer);
-    using var ms = new MemoryStream(buffer.ToArray());
-    using var image = Image.Load<Rgb24>(ms);
+    using var grayFrame = new Mat();
+    CvInvoke.CvtColor(frame, grayFrame, ColorConversion.Bgr2Gray);
 
-    // Convert to grayscale (matching PrintGuard's preprocessing)
-    image.Mutate(x => x.Grayscale());
+    // Calculate scaling to ensure shorter side is targetSize
+    double scale = Math.Max((double)targetSize / grayFrame.Width, (double)targetSize / grayFrame.Height);
+    int newWidth = (int)Math.Round(grayFrame.Width * scale);
+    int newHeight = (int)Math.Round(grayFrame.Height * scale);
 
-    // Resize to 256
-    image.Mutate(x => x.Resize(new ResizeOptions { Size = new Size(targetSize, targetSize), Mode = ResizeMode.Crop }));
+    using var scaledFrame = new Mat();
+    CvInvoke.Resize(grayFrame, scaledFrame, new System.Drawing.Size(newWidth, newHeight));
 
-    // Center crop to 224x224
+    // Center crop to targetSize x targetSize
+    int targetX = (newWidth - targetSize) / 2;
+    int targetY = (newHeight - targetSize) / 2;
+    System.Drawing.Rectangle targetRoi = new(targetX, targetY, targetSize, targetSize);
+    using var resizedFrame = new Mat(scaledFrame, targetRoi);
+
+    // Center crop to cropSize x cropSize
     int cropX = (targetSize - cropSize) / 2;
     int cropY = (targetSize - cropSize) / 2;
-    image.Mutate(x => x.Crop(new Rectangle(cropX, cropY, cropSize, cropSize)));
+    System.Drawing.Rectangle roi = new(cropX, cropY, cropSize, cropSize);
+    using var croppedFrame = new Mat(resizedFrame, roi);
+
+    // Ensure continuous memory block for direct array access
+    using var clonedContinuous = croppedFrame.IsContinuous ? null : croppedFrame.Clone();
+    var continuousCropped = clonedContinuous ?? croppedFrame;
 
     // 3. Prepare the flat array (CHW format: RRR... GGG... BBB...)
     // Even though grayscale, we replicate across 3 channels (as PrintGuard does)
     float[] normalizedData = new float[3 * cropSize * cropSize];
 
-    image.ProcessPixelRows(accessor =>
-    {
-      for (int y = 0; y < cropSize; y++)
-      {
-        var row = accessor.GetRowSpan(y);
-        for (int x = 0; x < cropSize; x++)
-        {
-          // Grayscale image - all RGB channels have the same value
-          // Normalize the grayscale value and replicate across all 3 channels
-          float grayValue = row[x].R / 255.0f;
+    byte[] grayPixels = new byte[cropSize * cropSize];
+    System.Runtime.InteropServices.Marshal.Copy(continuousCropped.DataPointer, grayPixels, 0, grayPixels.Length);
 
-          // Red Channel
-          normalizedData[0 * cropSize * cropSize + y * cropSize + x] = (grayValue - mean[0]) / std[0];
-          // Green Channel
-          normalizedData[1 * cropSize * cropSize + y * cropSize + x] = (grayValue - mean[1]) / std[1];
-          // Blue Channel
-          normalizedData[2 * cropSize * cropSize + y * cropSize + x] = (grayValue - mean[2]) / std[2];
-        }
-      }
-    });
+    for (int i = 0; i < cropSize * cropSize; i++)
+    {
+      float grayValue = grayPixels[i] / 255.0f;
+      // Red Channel
+      normalizedData[0 * cropSize * cropSize + i] = (grayValue - mean[0]) / std[0];
+      // Green Channel
+      normalizedData[1 * cropSize * cropSize + i] = (grayValue - mean[1]) / std[1];
+      // Blue Channel
+      normalizedData[2 * cropSize * cropSize + i] = (grayValue - mean[2]) / std[2];
+    }
 
     return normalizedData;
   }
