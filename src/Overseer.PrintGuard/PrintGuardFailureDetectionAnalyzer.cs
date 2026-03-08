@@ -138,7 +138,7 @@ public class PrintGuardFailureDetectionAnalyzer(PrintGuardModel model, IPrintGua
 
   public void Start(string url)
   {
-    _log.Info($"Starting failure detection analyzer testing against URL: {url}");
+    _log.Info("Starting failure detection analyzer.");
     cameraStreamer.Start(url);
   }
 

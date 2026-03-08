@@ -14,7 +14,14 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
 
   public void Start(string url)
   {
-    _log.Info($"Starting camera streamer for URL: {url}");
+    var safeUrl = url;
+    if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.UserInfo))
+    {
+      var builder = new UriBuilder(uri) { UserName = "***", Password = "***" };
+      safeUrl = builder.Uri.ToString();
+    }
+
+    _log.Info($"Starting camera streamer for URL: {safeUrl}");
     _capture = new VideoCapture(url);
     _capture.Set(CapProp.FourCC, VideoWriter.Fourcc('M', 'J', 'P', 'G'));
     _capture.ImageGrabbed += (s, e) =>
@@ -100,13 +107,13 @@ public class PrintGuardCameraStreamer : IPrintGuardCameraStreamer, IDisposable
     // Center crop to targetSize x targetSize
     int targetX = (newWidth - targetSize) / 2;
     int targetY = (newHeight - targetSize) / 2;
-    System.Drawing.Rectangle targetRoi = new System.Drawing.Rectangle(targetX, targetY, targetSize, targetSize);
+    System.Drawing.Rectangle targetRoi = new(targetX, targetY, targetSize, targetSize);
     using var resizedFrame = new Mat(scaledFrame, targetRoi);
 
     // Center crop to cropSize x cropSize
     int cropX = (targetSize - cropSize) / 2;
     int cropY = (targetSize - cropSize) / 2;
-    System.Drawing.Rectangle roi = new System.Drawing.Rectangle(cropX, cropY, cropSize, cropSize);
+    System.Drawing.Rectangle roi = new(cropX, cropY, cropSize, cropSize);
     using var croppedFrame = new Mat(resizedFrame, roi);
 
     // Ensure continuous memory block for direct array access
